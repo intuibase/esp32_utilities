@@ -18,7 +18,7 @@ public:
 		level_ = level;
 	}
 
-	void writeLog(const char* data, size_t length) const override;
+	void writeLog(const char *data, size_t length) override;
 
 private:
 	LoggerInterface::LogLevel level_;
