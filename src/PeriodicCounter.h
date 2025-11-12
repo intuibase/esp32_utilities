@@ -8,7 +8,7 @@ namespace ib {
 
 class PeriodicCounter {
 public:
-	PeriodicCounter(uint64_t intervalMs) : intervalMs_(std::min(intervalMs, UINT64_MAX / 1000)) {}
+	PeriodicCounter(uint64_t intervalMs) { setIntervalMs(intervalMs); }
 
 	bool durationPassed() {
 		int64_t now = esp_timer_get_time();
@@ -38,6 +38,7 @@ public:
 	}
 
 	uint64_t getIntervalMs() { return intervalMs_; }
+	void setIntervalMs(uint64_t intervalMs) { intervalMs_ = std::min(intervalMs, UINT64_MAX / 1000); }
 
 	void notifyNow() { lastPassed_ = esp_timer_get_time(); }
 
