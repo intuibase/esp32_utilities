@@ -27,7 +27,7 @@ public:
 		std::string_view swVersion;
 	};
 
-	MQTT(std::shared_ptr<logger::LoggerInterface> log, ib::mqtt::MqttConfig config, HomeAssistantDeviceInfo deviceInfo, getCounter_t getCounter, std::vector<std::shared_ptr<MQTTReporterInterface>> reporters) : log_(std::move(log)), config_(std::move(config)), deviceInfo_(std::move(deviceInfo)), client_{config_.brokerAddress.c_str(), config_.brokerPort}, getCounter_{std::move(getCounter)}, reporters_(std::move(reporters)) {
+	MQTT(std::shared_ptr<logger::LoggerInterface> log, ib::mqtt::MqttConfig config, HomeAssistantDeviceInfo deviceInfo, std::vector<std::shared_ptr<MQTTReporterInterface>> reporters) : log_(std::move(log)), config_(std::move(config)), deviceInfo_(std::move(deviceInfo)), client_{config_.brokerAddress.c_str(), config_.brokerPort}, reporters_(std::move(reporters)) {
 		mqttFeature_ = log_->addFeature("MQTT"s);
 
 		DBGLOGFI(log_, mqttFeature_, "Enabled: %d\n", config_.enabled);
@@ -58,8 +58,13 @@ public:
 			publishStatus();
 			// publishCounterMetrics();
 
-			auto publish = [this] (std::string_view topic, std::string_view payload, bool retained) {
-				client_.publish(topic, payload, retained);
+			auto publish = [this](std::string_view topic, std::string_view payload, bool retained) {
+				std::string fullStateTopic = config_.base;
+				fullStateTopic.append("/"sv).append(topic);
+
+				DBGLOGFI(log_, mqttFeature_, "Publishing to topic '%s' payload '%s' (retained: %d)\n", fullStateTopic.c_str(), std::string(payload).c_str(), retained);
+
+				client_.publish(fullStateTopic, payload, retained);
 			};
 
 			for (auto const &reporter : reporters_) {
@@ -107,27 +112,6 @@ private:
 		}
 	}
 
-	// void publishCounterMetrics() {
-	// 	auto now = millis();
-	// 	if (lastPublishCounterMetrics_ != 0 && !millisDurationPassed(lastPublishCounterMetrics_, 1000ul * config_.interval)) {
-	// 		decltype(now) timeToWait = static_cast<decltype(lastPublishCounterMetrics_)>(config_.interval) * 1000ul;
-	// 		timeToWait = timeToWait - (now - lastPublishCounterMetrics_);
-	// 		DBGLOGI(log_, "publishCounterMetrics: waiting for publish interval (%ds) last: %ld, now: %ld, still need to wait for: %ld ms \n", config_.interval, lastPublishCounterMetrics_, now, timeToWait);
-	// 		return;
-	// 	}
-
-	// 	lastPublishCounterMetrics_ = now;
-
-	// 	viewable_stringbuf payloadBuf;
-	// 	std::ostream ss(&payloadBuf);
-
-	// 	getCounter_(ss);
-
-	// 	DBGLOGI(log_, "publishCounterMetrics %zu\n", payloadBuf.view().length());
-
-	// 	client_.publish("ib_water_meter/water_usage"sv, payloadBuf.view(), false);
-	// }
-
 	void publishStatus() {
 		if (lastPublishStatus_ != 0 && !millisDurationPassed(lastPublishStatus_, 1000ul * config_.keepAlive)) {
 			auto now = millis();
@@ -147,8 +131,8 @@ private:
 		std::ostream ss(&payloadBuf);
 		ss << "{";
 		ss << "\"name\": \"" << sensorFriendlyName << "\",";
-		ss << "\"uniq_id\": \"" << sensorUniqueId << "\",";
-		ss << "\"obj_id\": \"" << sensorUniqueId << "\",";
+		ss << "\"uniq_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
+		ss << "\"obj_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
 		ss << "\"stat_t\": \"" << config_.base << "/" << stateTopic << "\",";
 		if (!unit.empty()) {
 			ss << "\"unit_of_meas\": \"" << unit << "\",";
@@ -186,8 +170,6 @@ private:
 	unsigned long lastPublishCounterMetrics_ = 0;
 
 	unsigned long lastOperate_ = 0;
-
-	getCounter_t getCounter_;
 
 	std::vector<std::shared_ptr<MQTTReporterInterface>> reporters_;
 };
