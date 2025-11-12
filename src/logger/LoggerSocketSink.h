@@ -11,7 +11,7 @@ namespace ib::logger {
 
 class LoggerSocketSink : public LoggerSinkInterface {
 public:
-	LoggerSocketSink(LoggerInterface::LogLevel level, std::string hostName, uint16_t port);
+	LoggerSocketSink(LoggerInterface::LogLevel level, std::string hostName, uint16_t port, int32_t connectionTimeoutMs = 1000);
 
 	LoggerInterface::LogLevel getLevel() const override {
 		return level_;
@@ -37,7 +37,8 @@ private:
 	LoggerInterface::LogLevel level_;
     std::string hostName_;
     uint16_t port_;
-    PeriodicCounter reconnectCounter_{10000};
+	int32_t connectionTimeoutMs_ = 1000;
+	PeriodicCounter reconnectCounter_{10000};
 	mutable std::mutex mutex_;
 };
 
