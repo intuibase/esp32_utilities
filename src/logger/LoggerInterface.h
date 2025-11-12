@@ -1,10 +1,13 @@
 #pragma once
 
 #include <bitset>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
 namespace ib::logger {
+
+class LoggerSinkInterface;
 
 class LoggerInterface {
 public:
@@ -26,6 +29,11 @@ public:
 	virtual LogFeatureType addFeature(std::string featureName) = 0;
 	virtual std::string getFeatureName(LogFeatureType feature) const = 0;
 	virtual std::unordered_map<LogFeatureType, std::string> getRegisteredFeatures() const = 0;
+
+	virtual bool isFeatureEnabled(LogFeatureType feature) const = 0;
+	virtual void enableFeature(LogFeatureType feature, bool enable) = 0;
+
+	virtual void attachSink(std::shared_ptr<LoggerSinkInterface> sink) = 0;
 };
 
 class LoggerSinkInterface {
@@ -38,11 +46,14 @@ public:
 	virtual void writeLog(const char *data, size_t length) = 0;
 };
 
-#define DBGLOG(log, level, ...)          \
-	do {                                 \
-		log->printf(level, __VA_ARGS__); \
-	} while (0)
 } // namespace ib::logger
+
+#define DBGLOG(log, level, ...)              \
+	do {                                     \
+		if (log) {                           \
+			log->printf(level, __VA_ARGS__); \
+		}                                    \
+	} while (0)
 
 #define DBGLOGI(log, ...) DBGLOG(log, ib::logger::LoggerInterface::LogLevel::INFO, __VA_ARGS__)
 #define DBGLOGE(log, ...) DBGLOG(log, ib::logger::LoggerInterface::LogLevel::ERROR, __VA_ARGS__)
