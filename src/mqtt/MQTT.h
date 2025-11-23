@@ -9,6 +9,7 @@
 #include "config.h"
 #include "mqtt/IntuibasePubSubClientWrapper.h"
 #include "mqtt/MQTTReporterInterface.h"
+#include "mqtt/MQTTPublishInterface.h"
 #include "mqtt/MqttConfig.h"
 #include "viewable_stringbuf.h"
 
@@ -16,7 +17,7 @@ using namespace std::string_view_literals;
 using namespace std::string_literals;
 namespace ib::mqtt {
 
-class MQTT {
+class MQTT : public MQTTPublishInterface {
 public:
 	using getCounter_t = std::function<void(std::ostream &)>;
 
@@ -58,17 +59,8 @@ public:
 			publishStatus();
 			// publishCounterMetrics();
 
-			auto publish = [this](std::string_view topic, std::string_view payload, bool retained) {
-				std::string fullStateTopic = config_.base;
-				fullStateTopic.append("/"sv).append(topic);
-
-				DBGLOGFI(log_, mqttFeature_, "Publishing to topic '%s' payload '%s' (retained: %d)\n", fullStateTopic.c_str(), std::string(payload).c_str(), retained);
-
-				client_.publish(fullStateTopic, payload, retained);
-			};
-
 			for (auto const &reporter : reporters_) {
-				reporter->publishStateTopic(publish, config_.interval);
+				reporter->publishStateTopic(*this, config_.interval);
 			}
 		}
 	}
@@ -86,13 +78,134 @@ public:
 		client_.loop();
 	}
 
+	void subscribe(std::string_view topic, std::function<void(char *topic, uint8_t *payload, unsigned int payloadLen)> cb) override {
+		std::string fullTopic = config_.base;
+		fullTopic.append("/"sv).append(topic);
+
+		client_.on(fullTopic.c_str(), cb);
+	}
+
+	void publishStateTopic(std::string_view topic, std::string_view payload, bool retained) override {
+		std::string fullStateTopic = config_.base;
+		fullStateTopic.append("/"sv).append(topic);
+
+		DBGLOGFI(log_, mqttFeature_, "Publishing to topic '%s' payload '%s' (retained: %d)\n", fullStateTopic.c_str(), std::string(payload).c_str(), retained);
+
+		client_.publish(fullStateTopic, payload, retained);
+	}
+
+	void publishAutoDiscoveryBinarySensor(std::string_view stateTopic, std::string_view sensorUniqueId, std::string_view sensorFriendlyName, std::string_view jsonValueName, std::string_view deviceClass, std::string_view entityCategory) override {
+		viewable_stringbuf payloadBuf;
+		std::ostream ss(&payloadBuf);
+		ss << "{";
+		ss << "\"name\": \"" << sensorFriendlyName << "\",";
+		ss << "\"uniq_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
+		ss << "\"obj_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
+		ss << "\"stat_t\": \"" << config_.base << "/" << stateTopic << "\",";
+		if (!deviceClass.empty()) {
+			ss << "\"dev_cla\": \"" << deviceClass << "\",";
+		}
+		if (!entityCategory.empty()) {
+			ss << "\"entity_category\": \"" << entityCategory << "\",";
+		}
+		ss << "\"val_tpl\": \"{{ \\\"on\\\" if value_json." << jsonValueName << " == \\\"on\\\" else \\\"off\\\" }}\",";
+		ss << "\"pl_on\": \"on\",";
+		ss << "\"pl_off\": \"off\",";
+		ss << "\"dev\": { \"ids\": [ \"" << config_.base << "\" ] }"; // dev
+		ss << ", \"avty\": [";
+		ss << "{ \"t\": \"" << config_.base << "/" << stateTopic << "\", \"val_tpl\": \"{{ \\\"online\\\" if value_json." << jsonValueName << " is defined else \\\"offline\\\" }}\" },";
+		ss << "{ \"t\": \"" << config_.base << "/status\", \"val_tpl\": \"{{ \\\"online\\\" if value == \\\"on\\\" else \\\"offline\\\" }}\" }";
+		ss << "], \"avty_mode\": \"all\"";
+		ss << "}";
+
+		viewable_stringbuf topicBuf;
+		std::ostream topic(&topicBuf);
+		topic << "homeassistant/binary_sensor/" << config_.base << "/" << sensorUniqueId << "/config";
+
+		client_.publish(topicBuf.view(), payloadBuf.view(), true);
+	}
+
+	void publishAutoDiscoverySensor(std::string_view stateTopic, std::string_view sensorUniqueId, std::string_view sensorFriendlyName, std::string_view jsonValueName, std::string_view valueOperation, std::string_view unit, std::string_view stateClass, std::string_view devClass = {}, std::string_view entityCategory = {}) override {
+		viewable_stringbuf payloadBuf;
+		std::ostream ss(&payloadBuf);
+		ss << "{";
+		ss << "\"name\": \"" << sensorFriendlyName << "\",";
+		ss << "\"uniq_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
+		ss << "\"obj_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
+		ss << "\"stat_t\": \"" << config_.base << "/" << stateTopic << "\",";
+
+		if (!entityCategory.empty()) {
+			ss << "\"entity_category\": \"" << entityCategory << "\",";
+		}
+
+		if (!unit.empty()) {
+			ss << "\"unit_of_meas\": \"" << unit << "\",";
+		}
+		if (!stateClass.empty()) {
+			ss << "\"stat_cla\": \"" << stateClass << "\",";
+		}
+		if (!devClass.empty()) {
+			ss << "\"dev_cla\": \"" << devClass << "\",";
+		}
+		ss << "\"val_tpl\": \"{{(value_json." << jsonValueName << valueOperation << ") if value_json." << jsonValueName << " is defined else '0'}}\",";
+		ss << "\"dev\": { \"ids\": [ \"" << config_.base << "\" ] },"; // dev
+		ss << "\"avty\": [";
+		ss << "{ \"t\": \"" << config_.base << "/" << stateTopic << "\", \"val_tpl\": \"{{ \\\"on\\\" if value_json." << jsonValueName << " is defined else \\\"off\\\" }}\" },";
+		ss << "{ \"t\": \"" << config_.base << "/status\", \"val_tpl\": \"{{ \\\"online\\\" if value == \\\"on\\\" else \\\"offline\\\" }}\" }";
+		ss << "], \"avty_mode\": \"all\"";
+		ss << "}";
+
+		viewable_stringbuf topicBuf;
+		std::ostream topic(&topicBuf);
+		topic << "homeassistant/sensor/" << config_.base << "/" << sensorUniqueId << "/config";
+
+		client_.publish(topicBuf.view(), payloadBuf.view(), true);
+	}
+
+	void publishAutoDiscoveryButton(std::string_view commandTopic, std::string_view buttonUniqueId, std::string_view buttonFriendlyName, std::string_view deviceClass, std::string_view entityCategory) override {
+		viewable_stringbuf payloadBuf;
+		std::ostream ss(&payloadBuf);
+		ss << "{";
+		ss << "\"name\": \"" << buttonFriendlyName << "\",";
+		ss << "\"uniq_id\": \"" << config_.base << "_" << buttonUniqueId << "\",";
+		ss << "\"obj_id\": \"" << config_.base << "_" << buttonUniqueId << "\",";
+
+		// topic to which Home Assistant will send the command when the button is pressed
+		ss << "\"cmd_t\": \"" << config_.base << "/" << commandTopic << "\",";
+
+		// payload that Home Assistant will send (you listen for it on ESP)
+		ss << "\"pl_prs\": \"PRESS\",";
+
+		// device_class: "restart", "update", "identify", ...
+		if (!deviceClass.empty()) {
+			ss << "\"dev_cla\": \"" << deviceClass << "\",";
+		}
+
+		if (!entityCategory.empty()) {
+			ss << "\"entity_category\": \"" << entityCategory << "\",";
+		}
+
+		ss << "\"dev\": { \"ids\": [ \"" << config_.base << "\" ] },";
+		ss << "\"avty\": [";
+		ss << "{ \"t\": \"" << config_.base << "/status\", \"val_tpl\": \"{{ \\\"online\\\" if value == \\\"on\\\" else \\\"offline\\\" }}\" }";
+		ss << "], \"avty_mode\": \"all\"";
+
+		ss << "}";
+
+		viewable_stringbuf topicBuf;
+		std::ostream topic(&topicBuf);
+		topic << "homeassistant/button/" << config_.base << "/" << buttonUniqueId << "/config";
+
+		client_.publish(topicBuf.view(), payloadBuf.view(), true);
+	}
+
 private:
 	void publishHADiscovery() {
 		DBGLOGI(log_, "publishHADiscovery\n");
 		viewable_stringbuf payloadBuf;
 		std::ostream ss(&payloadBuf);
 
-		ss << "{\"name\": \"" << deviceInfo_.name << "\", \"uniq_id\": \"" << config_.base << "\", \"object_id\": \"" << config_.base << "_status\", \"state_topic\": \"" << config_.base << "/status\",\
+		ss << "{\"name\": \"" << deviceInfo_.name << "\", \"uniq_id\": \"" << config_.base << "\", \"entity_category\": \"diagnostic\", \"object_id\": \"" << config_.base << "_status\", \"state_topic\": \"" << config_.base << "/status\",\
 \"device_class\": \"power\", \"payload_on\": \"on\", \"payload_off\": \"off\", \"dev\": {\"name\": \""
 		   << deviceInfo_.name << "\", \"sw\": \"" << deviceInfo_.swVersion << "\", \"mf\": \"" << deviceInfo_.manufacturer << "\", \"mdl\": \"" << deviceInfo_.model << "\", \"ids\": [ \"" << config_.base << "\" ] } }";
 
@@ -103,12 +216,8 @@ private:
 
 		client_.publish(topic, payload, true);
 
-		auto publish = [this](std::string_view stateTopic, std::string_view sensorUniqueId, std::string_view sensorFriendlyName, std::string_view jsonValueName, std::string_view valueOperation, std::string_view unit, std::string_view stateClass, std::string_view devClass) {
-			publishSensor(stateTopic, sensorUniqueId, sensorFriendlyName, jsonValueName, valueOperation, unit, stateClass, devClass);
-		};
-
 		for (auto const &reporter : reporters_) {
-			reporter->publishHADiscovery(publish);
+			reporter->publishHADiscovery(*this);
 		}
 	}
 
@@ -126,38 +235,6 @@ private:
 		client_.publish(config_.base + "/status"s, "on"sv, true);
 	}
 
-	void publishSensor(std::string_view stateTopic, std::string_view sensorUniqueId, std::string_view sensorFriendlyName, std::string_view jsonValueName, std::string_view valueOperation, std::string_view unit, std::string_view stateClass, std::string_view devClass = {}) {
-		viewable_stringbuf payloadBuf;
-		std::ostream ss(&payloadBuf);
-		ss << "{";
-		ss << "\"name\": \"" << sensorFriendlyName << "\",";
-		ss << "\"uniq_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
-		ss << "\"obj_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
-		ss << "\"stat_t\": \"" << config_.base << "/" << stateTopic << "\",";
-		if (!unit.empty()) {
-			ss << "\"unit_of_meas\": \"" << unit << "\",";
-		}
-		if (!stateClass.empty()) {
-			ss << "\"stat_cla\": \"" << stateClass << "\",";
-		}
-		if (!devClass.empty()) {
-			ss << "\"dev_cla\": \"" << devClass << "\",";
-		}
-		ss << "\"val_tpl\": \"{{(value_json." << jsonValueName << valueOperation << ") if value_json." << jsonValueName << " is defined else '0'}}\",";
-		ss << "\"dev\": { \"ids\": [ \"" << config_.base << "\" ] },"; // dev
-		ss << "\"avty\": [";
-		ss << "{ \"t\": \"" << config_.base << "/" << stateTopic << "\", \"val_tpl\": \"{{ \\\"online\\\" if value_json." << jsonValueName << " is defined else \\\"offline\\\" }}\" },";
-		ss << "{ \"t\": \"" << config_.base << "/status\", \"val_tpl\": \"{{ \\\"online\\\" if value == \\\"on\\\" else \\\"offline\\\" }}\" }";
-		ss << "], \"avty_mode\": \"all\"";
-		ss << "}";
-
-		viewable_stringbuf topicBuf;
-		std::ostream topic(&topicBuf);
-		topic << "homeassistant/sensor/" << config_.base << "/" << sensorUniqueId << "/config";
-
-		client_.publish(topicBuf.view(), payloadBuf.view(), true);
-	}
-
 private:
 	std::shared_ptr<logger::LoggerInterface> log_;
 	logger::LoggerInterface::LogFeatureType mqttFeature_;
@@ -173,5 +250,4 @@ private:
 
 	std::vector<std::shared_ptr<MQTTReporterInterface>> reporters_;
 };
-
 }
