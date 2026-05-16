@@ -150,7 +150,7 @@ public:
 		ss << "\"val_tpl\": \"{{(value_json." << jsonValueName << valueOperation << ") if value_json." << jsonValueName << " is defined else '0'}}\",";
 		ss << "\"dev\": { \"ids\": [ \"" << config_.base << "\" ] },"; // dev
 		ss << "\"avty\": [";
-		ss << "{ \"t\": \"" << config_.base << "/" << stateTopic << "\", \"val_tpl\": \"{{ \\\"on\\\" if value_json." << jsonValueName << " is defined else \\\"off\\\" }}\" },";
+		ss << "{ \"t\": \"" << config_.base << "/" << stateTopic << "\", \"val_tpl\": \"{{ \\\"online\\\" if value_json." << jsonValueName << " is defined else \\\"offline\\\" }}\" },";
 		ss << "{ \"t\": \"" << config_.base << "/status\", \"val_tpl\": \"{{ \\\"online\\\" if value == \\\"on\\\" else \\\"offline\\\" }}\" }";
 		ss << "], \"avty_mode\": \"all\"";
 		ss << "}";
