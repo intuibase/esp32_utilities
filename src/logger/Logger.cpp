@@ -3,6 +3,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <shared_mutex>
+#include <sys/time.h>
 
 namespace ib::logger {
 
