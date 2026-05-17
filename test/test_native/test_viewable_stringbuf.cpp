@@ -73,8 +73,9 @@ TEST(ViewableStringbuf, LargePayload) {
 		ss << "data" << i << " ";
 	}
 	auto v = buf.view();
-	EXPECT_GT(v.size(), 5000u);
+	EXPECT_EQ(v.size(), 7890u);
 	EXPECT_EQ(v.substr(0, 5), "data0");
+	EXPECT_EQ(v.substr(v.size() - 8), "data999 ");
 }
 
 // ============================================================================

@@ -162,7 +162,9 @@ TEST(Logger, LargeFormatString) {
 	// Generate a string longer than the 200-byte local buffer
 	std::string longStr(300, 'X');
 	logger.printf(ib::logger::LoggerInterface::LogLevel::INFO, "%s\n", longStr.c_str());
-	EXPECT_TRUE(sink->hasLogContaining(std::string(50, 'X')));
+	std::string const lastLog = sink->getLastLog();
+	std::string const tail = longStr.substr(longStr.size() - 50);
+	EXPECT_NE(lastLog.find(tail), std::string::npos);
 }
 
 // ============================================================================
@@ -176,6 +178,15 @@ TEST(Logger, AddFeatureReturnsUniqueIds) {
 	auto f1 = logger.addFeature("Feature1");
 	auto f2 = logger.addFeature("Feature2");
 	EXPECT_NE(f1, f2);
+}
+
+TEST(Logger, PlainPrintfAfterFirstFeatureDoesNotUseFeaturePrefix) {
+	auto sink = std::make_shared<MockLoggerSink>(ib::logger::LoggerInterface::LogLevel::INFO);
+	ib::logger::Logger logger({sink});
+	logger.addFeature("FirstFeature");
+	logger.printf(ib::logger::LoggerInterface::LogLevel::INFO, "plain-message\n");
+	EXPECT_TRUE(sink->hasLogContaining("plain-message"));
+	EXPECT_EQ(sink->getLastLog().find("FirstFeature"), std::string::npos);
 }
 
 TEST(Logger, GetFeatureName) {
