@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "CircularBuffer.h"
 
+#include <set>
 #include <string>
 
 // ============================================================================
@@ -120,6 +121,11 @@ TEST(CircularBuffer, OverwritesOldestOnWrap) {
 
 	EXPECT_EQ(buf.size(), 3u);
 	EXPECT_EQ(buf.newest(), 4);
+
+	// Verify all elements are accessible and contain expected physical values
+	EXPECT_EQ(buf.get(0), 4); // physical [0] was overwritten
+	EXPECT_EQ(buf.get(1), 2); // physical [1] retained
+	EXPECT_EQ(buf.get(2), 3); // physical [2] retained
 }
 
 TEST(CircularBuffer, MultipleWraps) {
@@ -131,6 +137,11 @@ TEST(CircularBuffer, MultipleWraps) {
 	}
 	EXPECT_EQ(buf.size(), 2u);
 	EXPECT_EQ(buf.newest(), 99);
+
+	// Verify both retained elements are the last two pushed
+	std::set<int> values{buf.get(0), buf.get(1)};
+	EXPECT_TRUE(values.count(98));
+	EXPECT_TRUE(values.count(99));
 }
 
 // ============================================================================
