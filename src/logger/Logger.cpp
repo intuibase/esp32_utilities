@@ -12,7 +12,11 @@ namespace ib::logger {
 LoggerInterface::LogFeatureType Logger::addFeature(std::string featureName) {
 	std::unique_lock<std::shared_mutex> lock(mutex_);
 	auto featureId = lastFeatureId_++;
-	registeredFeatures_.emplace(featureId, std::move(featureName));
+	auto [it, inserted] = registeredFeatures_.try_emplace(featureId, std::move(featureName));
+	if (!inserted) {
+		lastFeatureId_--;
+		return it->first;
+	}
 	enabledFeatures_.set(featureId);
 	return featureId;
 }
