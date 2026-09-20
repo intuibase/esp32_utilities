@@ -180,6 +180,25 @@ TEST(Logger, AddFeatureReturnsUniqueIds) {
 	EXPECT_NE(f1, f2);
 }
 
+TEST(Logger, AddFeatureTwiceReturnsSameId) {
+	auto sink = std::make_shared<MockLoggerSink>(ib::logger::LoggerInterface::LogLevel::INFO);
+	ib::logger::Logger logger({sink});
+	auto f1 = logger.addFeature("Feature");
+	auto f2 = logger.addFeature("Feature");
+	EXPECT_EQ(f1, f2);
+}
+
+TEST(Logger, AddFeatureWithEnabledFlag) {
+	auto sink = std::make_shared<MockLoggerSink>(ib::logger::LoggerInterface::LogLevel::INFO);
+	ib::logger::Logger logger({sink});
+
+	auto f1 = logger.addFeature("Feature1", true);
+	auto f2 = logger.addFeature("Feature2", false);
+	EXPECT_TRUE(logger.isFeatureEnabled(f1));
+	EXPECT_FALSE(logger.isFeatureEnabled(f2));
+	EXPECT_NE(f1, f2);
+}
+
 TEST(Logger, PlainPrintfAfterFirstFeatureDoesNotUseFeaturePrefix) {
 	auto sink = std::make_shared<MockLoggerSink>(ib::logger::LoggerInterface::LogLevel::INFO);
 	ib::logger::Logger logger({sink});

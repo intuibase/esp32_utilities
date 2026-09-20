@@ -26,7 +26,7 @@ public:
 	virtual LogLevel getMaxLogLevel() const = 0;
 	virtual void setLogFeatures(LogFeature features) = 0;
 
-	virtual LogFeatureType addFeature(std::string featureName) = 0;
+	virtual LogFeatureType addFeature(std::string featureName, bool enabled = true) = 0;
 	virtual std::string getFeatureName(LogFeatureType feature) const = 0;
 	virtual std::unordered_map<LogFeatureType, std::string> getRegisteredFeatures() const = 0;
 

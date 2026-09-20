@@ -28,7 +28,7 @@ public:
 
 	void setLogFeatures(LogFeature features) override;
 
-	LogFeatureType addFeature(std::string featureName) override;
+	LogFeatureType addFeature(std::string featureName, bool enabled = true) override;
 	std::string getFeatureName(LogFeatureType feature) const override;
 	std::unordered_map<LogFeatureType, std::string> getRegisteredFeatures() const override;
 

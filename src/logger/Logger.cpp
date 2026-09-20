@@ -1,5 +1,6 @@
 #include "Logger.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -9,15 +10,19 @@
 
 namespace ib::logger {
 
-LoggerInterface::LogFeatureType Logger::addFeature(std::string featureName) {
+LoggerInterface::LogFeatureType Logger::addFeature(std::string featureName, bool enabled) {
 	std::unique_lock<std::shared_mutex> lock(mutex_);
-	auto featureId = lastFeatureId_++;
-	auto [it, inserted] = registeredFeatures_.try_emplace(featureId, std::move(featureName));
-	if (!inserted) {
-		lastFeatureId_--;
+
+	auto it = std::find_if(registeredFeatures_.begin(), registeredFeatures_.end(), [&featureName](auto const &pair) { return pair.second == featureName; });
+	if (it != registeredFeatures_.end()) {
 		return it->first;
 	}
-	enabledFeatures_.set(featureId);
+
+	auto featureId = lastFeatureId_++;
+	registeredFeatures_.emplace(featureId, std::move(featureName));
+	if (enabled) {
+		enabledFeatures_.set(featureId);
+	}
 	return featureId;
 }
 
