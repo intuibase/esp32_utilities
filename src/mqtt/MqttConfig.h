@@ -8,6 +8,7 @@ namespace ib::mqtt
 struct MqttConfig
 {
 	bool enabled = false;
+	bool publishHomeAssistantDiscovery = true;
 	std::string brokerAddress;
 	uint16_t brokerPort;
 	std::string username;

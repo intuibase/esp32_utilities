@@ -44,7 +44,9 @@ public:
 
 		client_.onConnect([this](uint16_t connCount) {
 			DBGLOGFI(log_, mqttFeature_, "Connected to broker %d\n", connCount);
-			publishHADiscovery();
+			if (config_.publishHomeAssistantDiscovery) {
+				publishHADiscovery();
+			}
 		});
 
 		client_.connect(config_.clientId.c_str(), config_.username.empty() ? nullptr : config_.username.c_str(), config_.password.empty() ? nullptr : config_.password.c_str(), (config_.base + "/status").c_str(), 0, false, "off", true);
@@ -97,10 +99,12 @@ public:
 	void publishAutoDiscoveryBinarySensor(std::string_view stateTopic, std::string_view sensorUniqueId, std::string_view sensorFriendlyName, std::string_view jsonValueName, std::string_view deviceClass, std::string_view entityCategory) override {
 		viewable_stringbuf payloadBuf;
 		std::ostream ss(&payloadBuf);
+		const auto objectId = homeAssistantObjectId(sensorUniqueId);
 		ss << "{";
 		ss << "\"name\": \"" << sensorFriendlyName << "\",";
 		ss << "\"uniq_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
-		ss << "\"obj_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
+		ss << "\"obj_id\": \"" << objectId << "\",";
+		ss << "\"default_entity_id\": \"binary_sensor." << objectId << "\",";
 		ss << "\"stat_t\": \"" << config_.base << "/" << stateTopic << "\",";
 		if (!deviceClass.empty()) {
 			ss << "\"dev_cla\": \"" << deviceClass << "\",";
@@ -128,10 +132,12 @@ public:
 	void publishAutoDiscoverySensor(std::string_view stateTopic, std::string_view sensorUniqueId, std::string_view sensorFriendlyName, std::string_view jsonValueName, std::string_view valueOperation, std::string_view unit, std::string_view stateClass, std::string_view devClass = {}, std::string_view entityCategory = {}) override {
 		viewable_stringbuf payloadBuf;
 		std::ostream ss(&payloadBuf);
+		const auto objectId = homeAssistantObjectId(sensorUniqueId);
 		ss << "{";
 		ss << "\"name\": \"" << sensorFriendlyName << "\",";
 		ss << "\"uniq_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
-		ss << "\"obj_id\": \"" << config_.base << "_" << sensorUniqueId << "\",";
+		ss << "\"obj_id\": \"" << objectId << "\",";
+		ss << "\"default_entity_id\": \"sensor." << objectId << "\",";
 		ss << "\"stat_t\": \"" << config_.base << "/" << stateTopic << "\",";
 
 		if (!entityCategory.empty()) {
@@ -165,10 +171,12 @@ public:
 	void publishAutoDiscoveryButton(std::string_view commandTopic, std::string_view buttonUniqueId, std::string_view buttonFriendlyName, std::string_view deviceClass, std::string_view entityCategory) override {
 		viewable_stringbuf payloadBuf;
 		std::ostream ss(&payloadBuf);
+		const auto objectId = homeAssistantObjectId(buttonUniqueId);
 		ss << "{";
 		ss << "\"name\": \"" << buttonFriendlyName << "\",";
 		ss << "\"uniq_id\": \"" << config_.base << "_" << buttonUniqueId << "\",";
-		ss << "\"obj_id\": \"" << config_.base << "_" << buttonUniqueId << "\",";
+		ss << "\"obj_id\": \"" << objectId << "\",";
+		ss << "\"default_entity_id\": \"button." << objectId << "\",";
 
 		// topic to which Home Assistant will send the command when the button is pressed
 		ss << "\"cmd_t\": \"" << config_.base << "/" << commandTopic << "\",";
@@ -200,12 +208,27 @@ public:
 	}
 
 private:
+	std::string homeAssistantObjectId(std::string_view entityId) const {
+		std::string result = config_.base;
+		result.append("_").append(entityId);
+		for (auto &character : result) {
+			if (character >= 'A' && character <= 'Z') {
+				character = static_cast<char>(character - 'A' + 'a');
+			} else if (!((character >= 'a' && character <= 'z') ||
+						 (character >= '0' && character <= '9') ||
+						 character == '_')) {
+				character = '_';
+			}
+		}
+		return result;
+	}
+
 	void publishHADiscovery() {
 		DBGLOGI(log_, "publishHADiscovery\n");
 		viewable_stringbuf payloadBuf;
 		std::ostream ss(&payloadBuf);
 
-		ss << "{\"name\": \"" << deviceInfo_.name << "\", \"uniq_id\": \"" << config_.base << "\", \"entity_category\": \"diagnostic\", \"object_id\": \"" << config_.base << "_status\", \"state_topic\": \"" << config_.base << "/status\",\
+		ss << "{\"name\": \"" << deviceInfo_.name << "\", \"uniq_id\": \"" << config_.base << "\", \"entity_category\": \"diagnostic\", \"object_id\": \"" << homeAssistantObjectId("status"sv) << "\", \"default_entity_id\": \"binary_sensor." << homeAssistantObjectId("status"sv) << "\", \"state_topic\": \"" << config_.base << "/status\",\
 \"device_class\": \"power\", \"payload_on\": \"on\", \"payload_off\": \"off\", \"dev\": {\"name\": \""
 		   << deviceInfo_.name << "\", \"sw\": \"" << deviceInfo_.swVersion << "\", \"mf\": \"" << deviceInfo_.manufacturer << "\", \"mdl\": \"" << deviceInfo_.model << "\", \"ids\": [ \"" << config_.base << "\" ] } }";
 
