@@ -112,7 +112,7 @@ public:
 		if (!entityCategory.empty()) {
 			ss << "\"entity_category\": \"" << entityCategory << "\",";
 		}
-		ss << "\"val_tpl\": \"{{ \\\"on\\\" if value_json." << jsonValueName << " == \\\"on\\\" else \\\"off\\\" }}\",";
+		ss << "\"val_tpl\": \"{{ \\\"on\\\" if value_json." << jsonValueName << " == true or value_json." << jsonValueName << " == \\\"on\\\" else \\\"off\\\" }}\",";
 		ss << "\"pl_on\": \"on\",";
 		ss << "\"pl_off\": \"off\",";
 		ss << "\"dev\": { \"ids\": [ \"" << config_.base << "\" ] }"; // dev
