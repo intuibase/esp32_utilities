@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LogMemory.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -12,7 +13,25 @@ namespace ib::logger::detail {
 // No allocation after construction; records may wrap at any byte boundary.
 class LogRecordBuffer {
 public:
-	explicit LogRecordBuffer(size_t capacity) : bytes_(capacity >= 3 ? new (std::nothrow) uint8_t[capacity] : nullptr), capacity_(bytes_ ? capacity : 0) {}
+	explicit LogRecordBuffer(size_t internalCapacity, LogBufferMemoryPreference preference = LogBufferMemoryPreference::InternalRam, size_t psramCapacity = 64 * 1024, LogMemoryAllocator allocator = {}) : bytes_(nullptr, LogMemoryDeleter{allocator.context, allocator.free}) {
+		auto attempt = [&](size_t capacity, LogBufferMemoryType type) {
+			auto *memory = capacity >= 3 ? static_cast<uint8_t *>(allocator.allocate(allocator.context, capacity, type)) : nullptr;
+			if (!memory)
+				return false;
+			bytes_.reset(memory);
+			capacity_ = capacity;
+			memoryType_ = type;
+			return true;
+		};
+		if (preference == LogBufferMemoryPreference::PreferPsram) {
+			if (attempt(psramCapacity, LogBufferMemoryType::Psram))
+				return;
+			++psramAllocationFailures_;
+			++psramFallbacks_;
+		}
+		if (!attempt(internalCapacity, LogBufferMemoryType::InternalRam))
+			++internalAllocationFailures_;
+	}
 
 	bool push(const char *data, size_t length) {
 		if (!length || length > UINT16_MAX || length + 2 > capacity_ - used_)
@@ -41,6 +60,10 @@ public:
 	size_t records() const { return records_; }
 	size_t payloadBytes() const { return used_ - records_ * 2; }
 	size_t highWater() const { return highWater_; }
+	LogBufferMemoryType memoryType() const { return memoryType_; }
+	uint32_t psramAllocationFailures() const { return psramAllocationFailures_; }
+	uint32_t internalAllocationFailures() const { return internalAllocationFailures_; }
+	uint32_t psramFallbacks() const { return psramFallbacks_; }
 
 private:
 	void append(const void *source, size_t size) {
@@ -59,8 +82,10 @@ private:
 		head_ = (head_ + size) % capacity_;
 		used_ -= size;
 	}
-	std::unique_ptr<uint8_t[]> bytes_;
-	size_t capacity_, head_ = 0, tail_ = 0, used_ = 0, records_ = 0, highWater_ = 0;
+	std::unique_ptr<uint8_t, LogMemoryDeleter> bytes_;
+	LogBufferMemoryType memoryType_ = LogBufferMemoryType::None;
+	uint32_t psramAllocationFailures_ = 0, internalAllocationFailures_ = 0, psramFallbacks_ = 0;
+	size_t capacity_ = 0, head_ = 0, tail_ = 0, used_ = 0, records_ = 0, highWater_ = 0;
 };
 
 } // namespace ib::logger::detail

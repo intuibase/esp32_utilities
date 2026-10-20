@@ -367,3 +367,158 @@ TEST(LoggerSocketSink, ClosedPortCountsFailuresAndThrottlesRetries) {
 	EXPECT_EQ(sink.getStatistics().connectionFailures, 1u);
 	EXPECT_FALSE(sink.getStatistics().connected);
 }
+
+namespace {
+struct TestLogAllocator {
+	bool psramAvailable = false, internalAvailable = true;
+	std::vector<std::pair<size_t, LogBufferMemoryType>> requests;
+	size_t allocations = 0, frees = 0;
+	detail::LogMemoryAllocator allocator() {
+		return {this,
+		        [](void *context, size_t size, LogBufferMemoryType type) -> void * {
+					auto &self = *static_cast<TestLogAllocator *>(context);
+					self.requests.emplace_back(size, type);
+					if ((type == LogBufferMemoryType::Psram && !self.psramAvailable) || (type == LogBufferMemoryType::InternalRam && !self.internalAvailable))
+						return nullptr;
+					void *result = std::malloc(size);
+					if (result)
+						++self.allocations;
+					return result;
+				},
+		        [](void *context, void *memory) {
+					++static_cast<TestLogAllocator *>(context)->frees;
+					std::free(memory);
+				}};
+	}
+};
+} // namespace
+
+TEST(LogRecordMemory, DefaultNeverRequestsPsram) {
+	TestLogAllocator allocator;
+	allocator.psramAvailable = true;
+	{
+		detail::LogRecordBuffer queue(2048, LogBufferMemoryPreference::InternalRam, 65536, allocator.allocator());
+		EXPECT_EQ(queue.memoryType(), LogBufferMemoryType::InternalRam);
+		EXPECT_EQ(queue.capacity(), 2048u);
+		EXPECT_EQ(queue.psramFallbacks(), 0u);
+		ASSERT_EQ(allocator.requests.size(), 1u);
+		EXPECT_EQ(allocator.requests[0], std::make_pair(size_t(2048), LogBufferMemoryType::InternalRam));
+	}
+	EXPECT_EQ(allocator.allocations, 1u);
+	EXPECT_EQ(allocator.frees, 1u);
+}
+
+TEST(LogRecordMemory, ExternalAllocationWrapsAt64KiBAndDoesNotAllocatePerRecord) {
+	TestLogAllocator allocator;
+	allocator.psramAvailable = true;
+	{
+		detail::LogRecordBuffer queue(2048, LogBufferMemoryPreference::PreferPsram, 65536, allocator.allocator());
+		EXPECT_EQ(queue.memoryType(), LogBufferMemoryType::Psram);
+		EXPECT_EQ(queue.capacity(), 65536u);
+		EXPECT_EQ(queue.psramAllocationFailures(), 0u);
+		EXPECT_EQ(queue.psramFallbacks(), 0u);
+		char received[510];
+		for (int i = 0; i < 128; ++i) {
+			std::string data(510, static_cast<char>(i));
+			ASSERT_TRUE(queue.push(data.data(), data.size()));
+		}
+		EXPECT_FALSE(queue.push("full", 4));
+		for (int i = 0; i < 64; ++i) {
+			ASSERT_EQ(queue.pop(received), 510u);
+			EXPECT_EQ(std::string(received, 510), std::string(510, static_cast<char>(i)));
+		}
+		for (int i = 128; i < 192; ++i) {
+			std::string data(510, static_cast<char>(i));
+			ASSERT_TRUE(queue.push(data.data(), data.size()));
+		}
+		for (int i = 64; i < 192; ++i) {
+			ASSERT_EQ(queue.pop(received), 510u);
+			EXPECT_EQ(std::string(received, 510), std::string(510, static_cast<char>(i)));
+		}
+		EXPECT_EQ(queue.used(), 0u);
+		EXPECT_EQ(queue.highWater(), 65536u);
+		ASSERT_EQ(allocator.requests.size(), 1u);
+		EXPECT_EQ(allocator.requests[0], std::make_pair(size_t(65536), LogBufferMemoryType::Psram));
+	}
+	EXPECT_EQ(allocator.allocations, 1u);
+	EXPECT_EQ(allocator.frees, 1u);
+}
+
+TEST(LogRecordMemory, UnavailablePsramFallsBackOnlyToConfiguredSmallInternalBuffer) {
+	// No support, uninitialized PSRAM, and fragmentation all produce the same
+	// null allocation result. Policy must never retry 64 KiB in internal RAM.
+	TestLogAllocator allocator;
+	{
+		detail::LogRecordBuffer queue(1024, LogBufferMemoryPreference::PreferPsram, 65536, allocator.allocator());
+		EXPECT_EQ(queue.memoryType(), LogBufferMemoryType::InternalRam);
+		EXPECT_EQ(queue.capacity(), 1024u);
+		EXPECT_EQ(queue.psramAllocationFailures(), 1u);
+		EXPECT_EQ(queue.internalAllocationFailures(), 0u);
+		EXPECT_EQ(queue.psramFallbacks(), 1u);
+		ASSERT_EQ(allocator.requests.size(), 2u);
+		EXPECT_EQ(allocator.requests[0], std::make_pair(size_t(65536), LogBufferMemoryType::Psram));
+		EXPECT_EQ(allocator.requests[1], std::make_pair(size_t(1024), LogBufferMemoryType::InternalRam));
+		ASSERT_TRUE(queue.push("fallback", 8));
+		char data[8];
+		EXPECT_EQ(queue.pop(data), 8u);
+		EXPECT_EQ(std::string(data, 8), "fallback");
+	}
+	EXPECT_EQ(allocator.allocations, 1u);
+	EXPECT_EQ(allocator.frees, 1u);
+}
+
+TEST(LogRecordMemory, BothAllocationsFailWithoutOwningMemory) {
+	TestLogAllocator allocator;
+	allocator.internalAvailable = false;
+	{
+		detail::LogRecordBuffer queue(2048, LogBufferMemoryPreference::PreferPsram, 65536, allocator.allocator());
+		EXPECT_EQ(queue.capacity(), 0u);
+		EXPECT_EQ(queue.memoryType(), LogBufferMemoryType::None);
+		EXPECT_EQ(queue.psramAllocationFailures(), 1u);
+		EXPECT_EQ(queue.internalAllocationFailures(), 1u);
+		EXPECT_EQ(queue.psramFallbacks(), 1u);
+		EXPECT_FALSE(queue.push("x", 1));
+	}
+	EXPECT_EQ(allocator.allocations, 0u);
+	EXPECT_EQ(allocator.frees, 0u);
+}
+
+TEST(LogRecordMemory, ConfiguredExternalSizeIsIndependentOfInternalFallback) {
+	TestLogAllocator allocator;
+	allocator.psramAvailable = true;
+	detail::LogRecordBuffer queue(64, LogBufferMemoryPreference::PreferPsram, 1024, allocator.allocator());
+	EXPECT_EQ(queue.capacity(), 1024u);
+	ASSERT_EQ(allocator.requests.size(), 1u);
+	EXPECT_EQ(allocator.requests[0], std::make_pair(size_t(1024), LogBufferMemoryType::Psram));
+}
+
+TEST(LoggerSocketSink, ReportsActualDefaultAndFallbackMemory) {
+	LoggerSocketSink defaults(Level::INFO, "", 0, LoggerSocketSink::MemoryPreference::PreferPsram);
+	EXPECT_EQ(defaults.getStatistics().bufferCapacity, 2048u);
+	EXPECT_EQ(defaults.getStatistics().psramFallbacks, 1u);
+	LoggerSocketSink internal(Level::INFO, "", 0);
+	auto stats = internal.getStatistics();
+	EXPECT_EQ(stats.memoryType, LoggerSocketSink::MemoryType::InternalRam);
+	EXPECT_EQ(stats.bufferCapacity, 2048u);
+	EXPECT_EQ(stats.psramAllocationFailures, 0u);
+	EXPECT_EQ(stats.psramFallbacks, 0u);
+	LoggerSocketSink external(Level::INFO, "", 0, LoggerSocketSink::MemoryPreference::PreferPsram, 1000, 128, 65536, 64);
+	external.writeLog("works", 5);
+	stats = external.getStatistics();
+	EXPECT_TRUE(stats.enabled);
+	EXPECT_EQ(stats.memoryType, LoggerSocketSink::MemoryType::InternalRam);
+	EXPECT_EQ(stats.bufferCapacity, 128u);
+	EXPECT_EQ(stats.psramAllocationFailures, 1u);
+	EXPECT_EQ(stats.psramFallbacks, 1u);
+	EXPECT_EQ(stats.acceptedRecords, 1u);
+	EXPECT_EQ(stats.queuedBytes, 7u);
+	LoggerSocketSink failed(Level::INFO, "", 0, LoggerSocketSink::MemoryPreference::PreferPsram, 1000, 0, 65536, 64);
+	stats = failed.getStatistics();
+	EXPECT_FALSE(stats.enabled);
+	EXPECT_EQ(stats.memoryType, LoggerSocketSink::MemoryType::None);
+	EXPECT_EQ(stats.bufferCapacity, 0u);
+	EXPECT_EQ(stats.psramAllocationFailures, 1u);
+	EXPECT_EQ(stats.internalAllocationFailures, 1u);
+	EXPECT_EQ(stats.psramFallbacks, 1u);
+	EXPECT_GT(stats.noResources, 0u);
+}
