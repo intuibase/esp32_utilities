@@ -314,6 +314,41 @@ TEST(Logger, AttachSinkAfterConstruction) {
 	EXPECT_TRUE(sink->hasLogContaining("after attach"));
 }
 
+TEST(Logger, AttachDuringWriteAffectsOnlySubsequentEntries) {
+	using LogLevel = ib::logger::LoggerInterface::LogLevel;
+	class AttachingSink : public MockLoggerSink {
+	public:
+		AttachingSink() : MockLoggerSink(LogLevel::INFO) {}
+
+		void writeLog(const char *data, size_t length) override {
+			MockLoggerSink::writeLog(data, length);
+			if (sinkToAttach) {
+				logger->attachSink(std::move(sinkToAttach));
+			}
+		}
+
+		ib::logger::Logger *logger = nullptr;
+		std::shared_ptr<ib::logger::LoggerSinkInterface> sinkToAttach;
+	};
+
+	auto attaching = std::make_shared<AttachingSink>();
+	auto existing = std::make_shared<MockLoggerSink>(LogLevel::INFO);
+	auto added = std::make_shared<MockLoggerSink>(LogLevel::DEBUG);
+	ib::logger::Logger logger({attaching, existing});
+	attaching->logger = &logger;
+	attaching->sinkToAttach = added;
+
+	logger.printf(LogLevel::INFO, "first entry\n");
+	EXPECT_TRUE(existing->hasLogContaining("first entry"));
+	EXPECT_TRUE(added->getLogs().empty());
+	EXPECT_EQ(logger.getMaxLogLevel(), LogLevel::DEBUG);
+
+	logger.printf(LogLevel::DEBUG, "second entry\n");
+	EXPECT_TRUE(added->hasLogContaining("second entry"));
+	EXPECT_EQ(attaching->getLogs().size(), 1u);
+	EXPECT_EQ(existing->getLogs().size(), 1u);
+}
+
 // ============================================================================
 // Sink level change
 // ============================================================================

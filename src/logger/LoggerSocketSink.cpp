@@ -34,6 +34,9 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr auto pollInterval = std::chrono::milliseconds(20);
 constexpr auto reconnectDelay = std::chrono::seconds(10);
+#ifdef ARDUINO_ARCH_ESP32
+constexpr uint32_t workerStackBytes = 3072;
+#endif
 
 // A pending resolver owns its state independently of the sink. On ESP32 the
 // lwIP thread owns one reference through completion, even after sink shutdown.
@@ -402,7 +405,7 @@ LoggerSocketSink::LoggerSocketSink(LoggerInterface::LogLevel level, std::string 
 				xSemaphoreGive(state->finished);
 				vTaskDelete(nullptr);
 			},
-			"tcp-logger", 4096, &state, tskIDLE_PRIORITY + 1, &state.task) != pdPASS) {
+			"tcp-logger", workerStackBytes, &state, tskIDLE_PRIORITY + 1, &state.task) != pdPASS) {
 		state.task = nullptr;
 		++state.noResources;
 		return;
