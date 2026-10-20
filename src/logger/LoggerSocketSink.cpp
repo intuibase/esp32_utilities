@@ -47,7 +47,7 @@ struct DnsRequest {
 	char host[254]{};
 	void release() {
 		if (references.fetch_sub(1) == 1)
-			delete this;
+			detail::destroyInternal(this);
 	}
 #ifdef ARDUINO_ARCH_ESP32
 	static void complete(const char *, const ip_addr_t *address, void *argument) {
@@ -69,7 +69,7 @@ struct DnsRequest {
 };
 
 DnsRequest *resolve(const char *host) {
-	auto *request = new (std::nothrow) DnsRequest;
+	auto *request = detail::makeInternal<DnsRequest>();
 	if (!request)
 		return nullptr;
 	std::memcpy(request->host, host, std::strlen(host) + 1);
@@ -109,7 +109,7 @@ bool wouldBlock() {
 
 struct LoggerSocketSink::State {
 	detail::LogRecordBuffer queue;
-	std::unique_ptr<char[]> record;
+	std::unique_ptr<char, detail::LogMemoryDeleter> record;
 	const size_t maxLength;
 	const std::chrono::milliseconds timeout;
 	mutable std::mutex mutex;
@@ -133,7 +133,7 @@ struct LoggerSocketSink::State {
 	std::atomic<bool> notified{false};
 #endif
 
-	State(size_t capacity, size_t maximum, int32_t timeoutMs) : queue(capacity), record(maximum && maximum <= UINT16_MAX ? new (std::nothrow) char[maximum] : nullptr), maxLength(maximum), timeout(std::max<int32_t>(1, std::min<int32_t>(10000, timeoutMs))) {}
+	State(size_t capacity, size_t maximum, int32_t timeoutMs, MemoryPreference preference, size_t psramCapacity) : queue(capacity, preference, psramCapacity), record(maximum && maximum <= UINT16_MAX ? static_cast<char *>(detail::allocateLogMemory(maximum, MemoryType::InternalRam)) : nullptr), maxLength(maximum), timeout(std::max<int32_t>(1, std::min<int32_t>(10000, timeoutMs))) {}
 
 	void wake() {
 #ifdef ARDUINO_ARCH_ESP32
@@ -371,7 +371,13 @@ struct LoggerSocketSink::State {
 	}
 };
 
-LoggerSocketSink::LoggerSocketSink(LoggerInterface::LogLevel level, std::string hostName, uint16_t port, int32_t timeout, size_t capacity, size_t maximum) : state_(new (std::nothrow) State(capacity, maximum, timeout)), level_(level) {
+void LoggerSocketSink::StateDeleter::operator()(State *state) const {
+	detail::destroyInternal(state);
+}
+
+LoggerSocketSink::LoggerSocketSink(LoggerInterface::LogLevel level, std::string hostName, uint16_t port, int32_t timeout, size_t capacity, size_t maximum) : LoggerSocketSink(level, std::move(hostName), port, MemoryPreference::InternalRam, timeout, capacity, 64 * 1024, maximum) {}
+
+LoggerSocketSink::LoggerSocketSink(LoggerInterface::LogLevel level, std::string hostName, uint16_t port, MemoryPreference preference, int32_t timeout, size_t capacity, size_t psramCapacity, size_t maximum) : state_(detail::makeInternal<State>(capacity, maximum, timeout, preference, psramCapacity)), level_(level) {
 	if (!state_)
 		return;
 	auto &state = *state_;
@@ -486,6 +492,11 @@ LoggerSocketSink::Statistics LoggerSocketSink::getStatistics() const {
 	COUNTERS(COPY)
 #undef COPY
 #undef COUNTERS
+	result.memoryType = state_->queue.memoryType();
+	result.bufferCapacity = state_->queue.capacity();
+	result.psramAllocationFailures = state_->queue.psramAllocationFailures();
+	result.internalAllocationFailures = state_->queue.internalAllocationFailures();
+	result.psramFallbacks = state_->queue.psramFallbacks();
 	result.connected = state_->connected.load();
 	result.enabled = state_->enabled.load();
 	std::lock_guard<std::mutex> lock(state_->mutex);
