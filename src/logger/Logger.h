@@ -11,8 +11,11 @@
 namespace ib::logger {
 
 class Logger : public LoggerInterface {
+private:
+	using SinkList = std::vector<std::shared_ptr<LoggerSinkInterface>>;
+
 public:
-	Logger(std::vector<std::shared_ptr<LoggerSinkInterface>> sinks) : sinks_(std::move(sinks)) {
+	Logger(std::vector<std::shared_ptr<LoggerSinkInterface>> sinks) : sinks_(std::make_shared<const SinkList>(std::move(sinks))) {
 	}
 
 	void printf(LogLevel level, const char *format, ...) const override;
@@ -47,7 +50,7 @@ private:
 private:
 	std::string getFormattedTime() const;
 	std::string getFormattedProcessData() const;
-	std::vector<std::shared_ptr<LoggerSinkInterface>> sinks_;
+	std::shared_ptr<const SinkList> sinks_;
 	LogFeature enabledFeatures_;
 	std::unordered_map<LogFeatureType, std::string> registeredFeatures_;
 	mutable std::shared_mutex mutex_;

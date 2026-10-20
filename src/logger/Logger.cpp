@@ -54,7 +54,7 @@ bool Logger::doesFeatureMeetsLevelCondition(LogLevel level, LogFeatureType featu
 ib::logger::LoggerInterface::LogLevel Logger::getMaxLogLevel() const {
 	auto maxLevel = LogLevel::OFF;
 	std::shared_lock<std::shared_mutex> lock(mutex_);
-	for (auto const &sink : sinks_) {
+	for (auto const &sink : *sinks_) {
 		maxLevel = std::max(sink->getLevel(), maxLevel);
 	}
 	return maxLevel;
@@ -63,7 +63,7 @@ ib::logger::LoggerInterface::LogLevel Logger::getMaxLogLevel() const {
 bool Logger::doesMeetsLevelCondition(LogLevel level) const {
 	auto maxLevel = LogLevel::OFF;
 	std::shared_lock<std::shared_mutex> lock(mutex_);
-	for (auto const &sink : sinks_) {
+	for (auto const &sink : *sinks_) {
 		maxLevel = std::max(sink->getLevel(), maxLevel);
 	}
 	return level <= maxLevel;
@@ -71,7 +71,9 @@ bool Logger::doesMeetsLevelCondition(LogLevel level) const {
 
 void Logger::attachSink(std::shared_ptr<LoggerSinkInterface> sink) {
 	std::unique_lock<std::shared_mutex> lock(mutex_);
-	sinks_.emplace_back(std::move(sink));
+	auto updated = std::make_shared<SinkList>(*sinks_);
+	updated->emplace_back(std::move(sink));
+	sinks_ = std::move(updated);
 }
 
 void Logger::printf(LogLevel level, const char *format, ...) const {
@@ -128,13 +130,14 @@ void Logger::printf(LogLevel level, LogFeatureType feature, const char *format, 
 		len = vsnprintf(temp + timeLen, len + 1, format, args);
 	}
 
-	std::vector<std::shared_ptr<LoggerSinkInterface>> sinksCopy;
+	// Keep the current list alive without copying its elements or holding the lock during I/O.
+	std::shared_ptr<const SinkList> sinksSnapshot;
 	{
 		std::shared_lock<std::shared_mutex> lock(mutex_);
-		sinksCopy = sinks_;
+		sinksSnapshot = sinks_;
 	}
 
-	for (auto const &sink : sinksCopy) {
+	for (auto const &sink : *sinksSnapshot) {
 		if (sink->getLevel() < level) {
 			continue;
 		}

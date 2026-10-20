@@ -36,7 +36,7 @@ public:
 	};
 
 	// queueCapacity includes two bytes of metadata per record. One additional
-	// maxRecordLength buffer belongs to the worker. ESP32 worker stack: 4096 B.
+	// maxRecordLength buffer belongs to the worker. ESP32 worker stack: 3072 B.
 	// queueCapacity is always the internal allocation/fallback size. PreferPsram
 	// tries psramCapacity only in initialized external RAM, then queueCapacity
 	// explicitly in internal RAM. All metadata and the worker buffer stay internal.
