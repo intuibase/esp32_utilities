@@ -41,14 +41,12 @@ std::unordered_map<LoggerInterface::LogFeatureType, std::string> Logger::getRegi
 }
 
 void Logger::setLogFeatures(LogFeature features) {
+	std::unique_lock<std::shared_mutex> lock(mutex_);
 	enabledFeatures_ = std::move(features);
 }
 
 bool Logger::doesFeatureMeetsLevelCondition(LogLevel level, LogFeatureType feature) const {
-	if (enabledFeatures_.test(feature)) {
-		return doesMeetsLevelCondition(level);
-	}
-	return false;
+	return isFeatureEnabled(feature) && doesMeetsLevelCondition(level);
 }
 
 ib::logger::LoggerInterface::LogLevel Logger::getMaxLogLevel() const {
@@ -83,15 +81,11 @@ void Logger::printf(LogLevel level, const char *format, ...) const {
 
 	va_list args;
 	va_start(args, format);
-	printf(level, 0, format, args);
+	formatAndWrite(level, {}, format, args);
 	va_end(args);
 }
 
 void Logger::printf(LogLevel level, LogFeatureType feature, const char *format, ...) const {
-	if (!enabledFeatures_.test(feature)) {
-		return;
-	}
-
 	va_list args;
 	va_start(args, format);
 	printf(level, feature, format, args);
@@ -99,10 +93,16 @@ void Logger::printf(LogLevel level, LogFeatureType feature, const char *format, 
 }
 
 void Logger::printf(LogLevel level, LogFeatureType feature, const char *format, va_list args) const {
+	if (!doesFeatureMeetsLevelCondition(level, feature)) {
+		return;
+	}
+	formatAndWrite(level, getFeatureName(feature), format, args);
+}
+
+void Logger::formatAndWrite(LogLevel level, const std::string &featureName, const char *format, va_list args) const {
 	char loc_buf[200];
 	auto timeLen = getTime(loc_buf, 21);
 
-	auto featureName = getFeatureName(feature);
 	if (!featureName.empty()) {
 		int written = snprintf(loc_buf + timeLen, sizeof(loc_buf) - timeLen, "[%-10.10s] ", featureName.c_str());
 		if (written > 0) {
@@ -122,12 +122,17 @@ void Logger::printf(LogLevel level, LogFeatureType feature, const char *format, 
 	}
 
 	if (len >= (int)sizeof(loc_buf) - timeLen) { // comparation of same sign type for the compiler
-		temp = (char *)malloc(len + 1 + timeLen);
+		const size_t capacity = static_cast<size_t>(len) + 1;
+		temp = static_cast<char *>(malloc(timeLen + capacity));
 		if (temp == NULL) {
 			return; // Allocation failed
 		}
 		memcpy(temp, loc_buf, timeLen);
-		len = vsnprintf(temp + timeLen, len + 1, format, args);
+		len = vsnprintf(temp + timeLen, capacity, format, args);
+		if (len < 0 || static_cast<size_t>(len) >= capacity) {
+			free(temp);
+			return; // Encoding error or truncated output
+		}
 	}
 
 	// Keep the current list alive without copying its elements or holding the lock during I/O.
