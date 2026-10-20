@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <barrier>
+#include <thread>
 
 // ============================================================================
 // Mock sink for capturing log output
@@ -163,9 +165,36 @@ TEST(Logger, LargeFormatString) {
 	std::string longStr(300, 'X');
 	logger.printf(ib::logger::LoggerInterface::LogLevel::INFO, "%s\n", longStr.c_str());
 	std::string const lastLog = sink->getLastLog();
-	std::string const tail = longStr.substr(longStr.size() - 50);
-	EXPECT_NE(lastLog.find(tail), std::string::npos);
+	ASSERT_EQ(lastLog.size(), 24 + longStr.size() + 1);
+	EXPECT_EQ(lastLog.substr(24), longStr + "\n");
 }
+
+class LoggerBufferBoundary : public ::testing::TestWithParam<std::pair<bool, size_t>> {};
+
+TEST_P(LoggerBufferBoundary, PreservesFullMessageAndExactLength) {
+	using LogLevel = ib::logger::LoggerInterface::LogLevel;
+	const auto [withFeature, totalLength] = GetParam();
+	auto sink = std::make_shared<MockLoggerSink>(LogLevel::INFO);
+	ib::logger::Logger logger({sink});
+	auto feature = logger.addFeature("Boundary");
+	const std::string prefix = withFeature ? "[Boundary  ] " : "";
+	// Timestamp is 24 bytes; leave room for a distinctive final byte.
+	const std::string payload = std::string(totalLength - 24 - prefix.size() - 1, 'X') + '!';
+	if (withFeature)
+		logger.printf(LogLevel::INFO, feature, "%s", payload.c_str());
+	else
+		logger.printf(LogLevel::INFO, "%s", payload.c_str());
+
+	ASSERT_EQ(sink->getLogs().size(), 1u);
+	const auto &output = sink->getLogs().front();
+	ASSERT_EQ(output.size(), totalLength);
+	EXPECT_EQ(output.substr(24), prefix + payload);
+}
+
+INSTANTIATE_TEST_SUITE_P(LocalBuffer, LoggerBufferBoundary,
+	::testing::Values(std::make_pair(false, size_t{199}), std::make_pair(false, size_t{200}),
+		std::make_pair(false, size_t{201}), std::make_pair(true, size_t{199}),
+		std::make_pair(true, size_t{200}), std::make_pair(true, size_t{201})));
 
 // ============================================================================
 // Feature system
@@ -205,7 +234,90 @@ TEST(Logger, PlainPrintfAfterFirstFeatureDoesNotUseFeaturePrefix) {
 	logger.addFeature("FirstFeature");
 	logger.printf(ib::logger::LoggerInterface::LogLevel::INFO, "plain-message\n");
 	EXPECT_TRUE(sink->hasLogContaining("plain-message"));
-	EXPECT_EQ(sink->getLastLog().find("FirstFeature"), std::string::npos);
+	EXPECT_EQ(sink->getLastLog().find("[FirstFeatu]"), std::string::npos);
+
+	logger.printf(ib::logger::LoggerInterface::LogLevel::INFO,
+		static_cast<ib::logger::LoggerInterface::LogFeatureType>(0), "feature-message\n");
+	EXPECT_TRUE(sink->hasLogContaining("[FirstFeatu] feature-message"));
+}
+
+TEST(Logger, FeatureWithRejectedLevelIsNotFormatted) {
+	using LogLevel = ib::logger::LoggerInterface::LogLevel;
+	auto sink = std::make_shared<MockLoggerSink>(LogLevel::INFO);
+	ib::logger::Logger logger({sink});
+	auto feature = logger.addFeature("Test");
+	int formattedCharacters = -1;
+
+	// %n makes formatting observable even when no sink receives the result.
+	logger.printf(LogLevel::DEBUG, feature, "hidden%n", &formattedCharacters);
+	EXPECT_EQ(formattedCharacters, -1);
+	EXPECT_TRUE(sink->getLogs().empty());
+}
+
+TEST(Logger, SetLogFeaturesControlsFiltering) {
+	using LogLevel = ib::logger::LoggerInterface::LogLevel;
+	auto sink = std::make_shared<MockLoggerSink>(LogLevel::INFO);
+	ib::logger::Logger logger({sink});
+	auto first = logger.addFeature("First");
+	auto second = logger.addFeature("Second");
+	ib::logger::LoggerInterface::LogFeature features;
+	features.set(second);
+	logger.setLogFeatures(features);
+
+	EXPECT_FALSE(logger.isFeatureEnabled(first));
+	EXPECT_FALSE(logger.doesFeatureMeetsLevelCondition(LogLevel::INFO, first));
+	EXPECT_TRUE(logger.doesFeatureMeetsLevelCondition(LogLevel::INFO, second));
+	logger.printf(LogLevel::INFO, first, "hidden\n");
+	logger.printf(LogLevel::INFO, second, "visible\n");
+	logger.printf(LogLevel::INFO, "plain\n");
+	EXPECT_EQ(sink->getLogs().size(), 2u);
+	EXPECT_TRUE(sink->hasLogContaining("visible"));
+	EXPECT_TRUE(sink->hasLogContaining("plain"));
+}
+
+TEST(Logger, ConcurrentFeatureUpdatesAndReads) {
+	using LogLevel = ib::logger::LoggerInterface::LogLevel;
+	auto sink = std::make_shared<MockLoggerSink>(LogLevel::INFO);
+	ib::logger::Logger logger({sink});
+	auto feature = logger.addFeature("Concurrent");
+	std::barrier start(4);
+	constexpr int iterations = 2000;
+	std::thread toggler([&] {
+		start.arrive_and_wait();
+		for (int i = 0; i < iterations; ++i)
+			logger.enableFeature(feature, i % 2 == 0);
+	});
+	std::thread replacer([&] {
+		start.arrive_and_wait();
+		for (int i = 0; i < iterations; ++i) {
+			ib::logger::LoggerInterface::LogFeature features;
+			features.set(feature, i % 2 == 0);
+			logger.setLogFeatures(features);
+		}
+	});
+	std::thread reader([&] {
+		start.arrive_and_wait();
+		for (int i = 0; i < iterations; ++i) {
+			(void)logger.isFeatureEnabled(feature);
+			(void)logger.doesFeatureMeetsLevelCondition(LogLevel::INFO, feature);
+			logger.printf(LogLevel::INFO, feature, "concurrent entry\n");
+		}
+	});
+	start.arrive_and_wait();
+	toggler.join();
+	replacer.join();
+	reader.join();
+
+	// No ordering is promised during updates; the final published mask must apply.
+	logger.setLogFeatures({});
+	EXPECT_FALSE(logger.isFeatureEnabled(feature));
+	EXPECT_FALSE(logger.doesFeatureMeetsLevelCondition(LogLevel::INFO, feature));
+	sink->clear();
+	logger.printf(LogLevel::INFO, feature, "hidden\n");
+	EXPECT_TRUE(sink->getLogs().empty());
+	logger.enableFeature(feature, true);
+	logger.printf(LogLevel::INFO, feature, "visible\n");
+	EXPECT_TRUE(sink->hasLogContaining("visible"));
 }
 
 TEST(Logger, GetFeatureName) {
@@ -347,6 +459,41 @@ TEST(Logger, AttachDuringWriteAffectsOnlySubsequentEntries) {
 	EXPECT_TRUE(added->hasLogContaining("second entry"));
 	EXPECT_EQ(attaching->getLogs().size(), 1u);
 	EXPECT_EQ(existing->getLogs().size(), 1u);
+}
+
+TEST(Logger, ConcurrentAttachPreservesEverySinkWhileLogging) {
+	using LogLevel = ib::logger::LoggerInterface::LogLevel;
+	auto initial = std::make_shared<MockLoggerSink>(LogLevel::INFO);
+	ib::logger::Logger logger({initial});
+	std::vector<std::shared_ptr<MockLoggerSink>> first, second;
+	for (int i = 0; i < 32; ++i) {
+		first.push_back(std::make_shared<MockLoggerSink>(LogLevel::INFO));
+		second.push_back(std::make_shared<MockLoggerSink>(LogLevel::INFO));
+	}
+	std::barrier start(4);
+	auto attach = [&](const auto &sinks) {
+		start.arrive_and_wait();
+		for (const auto &sink : sinks)
+			logger.attachSink(sink);
+	};
+	std::thread firstAttacher([&] { attach(first); });
+	std::thread secondAttacher([&] { attach(second); });
+	std::thread writer([&] {
+		start.arrive_and_wait();
+		for (int i = 0; i < 100; ++i)
+			logger.printf(LogLevel::INFO, "during attach %d\n", i);
+	});
+	start.arrive_and_wait();
+	firstAttacher.join();
+	secondAttacher.join();
+	writer.join();
+
+	logger.printf(LogLevel::INFO, "after both attachers\n");
+	EXPECT_TRUE(initial->hasLogContaining("after both attachers"));
+	for (const auto &sinks : {first, second}) {
+		for (const auto &sink : sinks)
+			EXPECT_TRUE(sink->hasLogContaining("after both attachers"));
+	}
 }
 
 // ============================================================================

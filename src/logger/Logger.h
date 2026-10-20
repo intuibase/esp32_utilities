@@ -45,6 +45,7 @@ public:
 	}
 
 private:
+	void formatAndWrite(LogLevel level, const std::string &featureName, const char *format, va_list args) const;
 	size_t getTime(char* buf, size_t size) const;
 
 private:
